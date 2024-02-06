@@ -1,0 +1,107 @@
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, ggplot2, dplyr, lubridate, stringr, readxl, data.table, gdata)
+
+data <- readRDS("data/output/full_ma_data.rds")
+contract.service.area <- readRDS('data/output/contract_service_area.rds')
+ma.penetration.data <- readRDS('data/output/ma_penetration.rds')
+plan.premiums <- readRDS('data/output/plan_premiums.rds')
+summary(data)
+num_observations <- nrow(data)
+print(num_observations)
+
+num_plan_types <- length(unique(data$plan_type))
+cat("Number of different plan types", num_plan_types, "\n")
+
+plan_count_table <- data %>%
+  group_by(year, plan_type) %>%
+  summarise(plan_count = n()) %>%
+  pivot_wider(names_from = year, values_from = plan_count, values_fill = 0)
+tot.obs <- as.numeric(count(data %>% ungroup()))
+plan.type.year1 <- data %>% group_by(plan_type, year) %>% count() %>% arrange(year, -n) %>% filter(plan_type!="NA")
+plan.type.year1 <- pivot_wider(plan.type.year1, names_from="year",values_from="n", names_prefix="Count_")
+# Print the table
+print(plan_count_table, n=27)
+
+#Filter out the SNP, eghp, and 800-series plans
+filtered_data <- data %>%
+  filter(!(snp == 'No') & (eghp == 'No') & (planid < 800 | planid >= 900))
+
+# Count of observations after exclusions
+num_observations_after_exclusions <- nrow(filtered_data)
+print(paste("Number of observations after exclusions: ", num_observations_after_exclusions))
+
+# Count of unique plan types after exclusions
+num_plan_types_after_exclusions <- length(unique(filtered_data$plan_type))
+print(paste("Number of different plan_types after exclusions: ", num_plan_types_after_exclusions))
+
+# Create a table of plan counts by year and plan type after exclusions
+plan_count_table_after_exclusions <- filtered_data %>%
+  group_by(year, plan_type) %>%
+  summarise(plan_count = n()) %>%
+  pivot_wider(names_from = year, values_from = plan_count, values_fill = 0)
+
+# Print the updated table
+print(plan_count_table_after_exclusions, n=27)
+
+final.data <- filtered_data %>%
+  inner_join(contract.service.area %>% 
+               select(contractid, fips, year), 
+             by=c("contractid", "fips", "year")) %>%
+  filter(!is.na(avg_enrollment))
+
+final.data.pen <- filtered_data %>%
+  left_join( ma.penetration.data %>% ungroup() %>%
+               rename(state_long=state, county_long=county), 
+             by=c("fips", "year"))
+
+final.state <- final.data.pen %>% 
+  group_by(state) %>% 
+  summarize(state_name=last(state_long, na.rm=TRUE))
+
+final.data.pen <- final.data.pen %>%
+  left_join(final.state,
+            by=c("state"))
+
+prem.data <- final.data.pen %>%
+  left_join( plan.premiums,
+             by=c("contractid","planid","state_name"="state","county","year"))
+
+
+fig.avg.enrollment <- filtered_data %>%
+  group_by(fips, year) %>% 
+  select(fips, year, avg_enrollment) %>% 
+  summarize(all_enroll=sum(avg_enrollment)) %>%
+  ggplot(aes(x=as.factor(year),y=all_enroll)) + 
+  stat_summary(fun="mean", geom="bar") +
+  labs(
+    x="Year",
+    y="People",
+    title=""
+  )
+
+fig.avg.premium <- prem.data %>% ungroup() %>% group_by(year) %>%
+  ggplot(aes(x=as.factor(year),y=premium, group=1)) + 
+  stat_summary(fun="mean", geom="line", na.rm=TRUE) +
+  labs(
+    x="Year",
+    y="Premium",
+    title=""
+  ) 
+
+fig.percent.zero <- prem.data %>% ungroup() %>%
+  mutate(prem_0=(premium==0),
+         prem_na=(is.na(premium))) %>%
+  group_by(year) %>%
+  summarize(all_count=n(),prem_0=sum(prem_0, na.rm=TRUE), prem_na=sum(prem_na)) %>%
+  mutate(perc_0=prem_0/all_count) %>%
+  ggplot(aes(x=as.factor(year), y=perc_0, group=1)) + geom_line() +
+  labs(
+    x="Year",
+    y="Percent",
+    title=""
+  ) 
+
+rm(list=c("data", "contract.service.area",
+           "ma.penetration.data", "plan.premiums", "filtered_data",
+           "final.data.pen", "final.state","prem.data","final.data"))
+save.image("Analysis/Hwk1_workspace.Rdata")
